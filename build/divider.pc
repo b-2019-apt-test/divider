@@ -1,0 +1,10 @@
+prefix=C:/magic
+
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: magic
+Version:
+Description:
+Cflags: -I${includedir}
+Libs: -L${libdir} -lmagic
