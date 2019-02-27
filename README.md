@@ -27,7 +27,7 @@ You can specify division method with `-m` flag:
 $ divider -i jobs.json -m cgo
 ```
 
-Available methods: `go`, `cgo`, `syscall` (default). Option `-z` has presedence over the `-m` flag: if both defined, `go` method will be used.
+Available methods: `go`, `cgo`, `syscall` (default). Option `-z` has precedence over the `-m` flag: if both defined, `go` method will be used.
 
 Run divider without arguments to see the full usage info.
 
