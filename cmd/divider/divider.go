@@ -8,56 +8,57 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"syscall"
+	"runtime"
+	"time"
 
 	"github.com/b-2019-apt-test/divider/internal/divider"
-	"github.com/b-2019-apt-test/divider/internal/divider/extra"
-	"github.com/b-2019-apt-test/divider/internal/divider/ordinary"
+	"github.com/b-2019-apt-test/divider/internal/divider/csvrep"
+	"github.com/b-2019-apt-test/divider/internal/divider/jsonprov"
+
+	"github.com/b-2019-apt-test/divider/pkg/div"
+	"github.com/b-2019-apt-test/divider/pkg/div/calldiv"
+	"github.com/b-2019-apt-test/divider/pkg/div/cgodiv"
+	"github.com/b-2019-apt-test/divider/pkg/div/godiv"
 )
 
-const (
-	jobsUsage   = `path to the file with jobs`
-	jobsDefault = ``
+var (
+	jobsFilePath    string
+	resultsFilePath string
+	logFilePath     string
+	workers         uint
+	dontUseExt      bool
+	method          string
 
-	resultsUsage   = `results file path`
-	resultsDefault = "divider.csv"
-
-	logUsage   = `log file path`
-	logDefault = ``
-
-	workersUsage        = `workers count`
-	workersDefault uint = 256
-
-	sizeUsage        = `worker pool buffer size`
-	sizeDefault uint = 2048
-
-	dontUseExtUsage   = `do not use math.dll`
-	dontUseExtDefault = false
+	start = time.Now()
 )
 
 func main() {
 
-	var (
-		jobsFilePath    string
-		resultsFilePath string
-		logFilePath     string
-		workers         uint
-		size            uint
-		dontUseExt      bool
-	)
-
-	flag.StringVar(&jobsFilePath, "i", jobsDefault, jobsUsage)
-	flag.StringVar(&resultsFilePath, "o", resultsDefault, resultsUsage)
-	flag.StringVar(&logFilePath, "log", logDefault, logUsage)
-	flag.UintVar(&workers, "w", workersDefault, workersUsage)
-	flag.UintVar(&size, "s", sizeDefault, sizeUsage)
-	flag.BoolVar(&dontUseExt, "z", dontUseExtDefault, dontUseExtUsage)
+	flag.StringVar(&jobsFilePath, "i", "", "path to the file with jobs")
+	flag.StringVar(&resultsFilePath, "o", "divider.csv", "results file path")
+	flag.StringVar(&logFilePath, "log", "", "log file path")
+	flag.UintVar(&workers, "w", uint(runtime.NumCPU()*1024), "workers count")
+	flag.BoolVar(&dontUseExt, "z", false, "do not use math.dll (depricated)")
+	flag.StringVar(&method, "m", "syscall", "division method: go, cgo, syscall")
 	flag.Parse()
 
+	if len(flag.Args()) != 0 {
+		exitWithUsage("Unparsed args:", flag.Args())
+	}
+
 	if len(jobsFilePath) == 0 {
-		fmt.Fprintln(os.Stderr, "Path to the jobs file not specified.")
-		flag.PrintDefaults()
-		os.Exit(1)
+		exitWithUsage("Path to the jobs file not specified.")
+	}
+
+	var (
+		err error
+		d   div.Divider
+	)
+
+	if dontUseExt {
+		d = godiv.Divider
+	} else if d = parseDivider(method); d == nil {
+		exitWithUsage("Divider method unknown:", method)
 	}
 
 	logger := log.New(os.Stderr, "", log.LstdFlags)
@@ -73,32 +74,23 @@ func main() {
 	}
 
 	reader, err := os.OpenFile(jobsFilePath, os.O_RDONLY, 0400)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
+	exitOn(err)
 	defer closeFile(reader)
+	provider, err := jsonprov.New(reader)
+	exitOn(err)
 
 	writer, err := os.Create(resultsFilePath)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
+	exitOn(err)
 	defer closeSyncFile(writer)
+	reporter, err := csvrep.New(writer)
+	exitOn(err)
 
-	var div divider.Divider
-	if dontUseExt {
-		div = ordinary.NewDivider()
-	} else {
-		div = extra.NewDivider()
-	}
-
-	proc := divider.NewJobProcessor().SetDivider(div).
-		SetResultWriter(writer).
-		SetJobReader(reader).
+	proc := divider.NewJobProcessor().
+		SetJobProvider(provider).
+		SetResultReporter(reporter).
 		SetWorkersCount(workers).
-		SetPoolSize(size).
-		SetLogger(logger)
+		SetLogger(logger).
+		SetDivider(d)
 
 	done := make(chan error, 1)
 	go func() {
@@ -106,7 +98,7 @@ func main() {
 	}()
 
 	s := make(chan os.Signal, 1)
-	signal.Notify(s, os.Interrupt, syscall.SIGTERM)
+	signal.Notify(s, os.Interrupt)
 	var ack bool
 
 loop:
@@ -114,17 +106,26 @@ loop:
 		select {
 		case v := <-s:
 			if ack {
-				fmt.Println("Stopping...")
+				logger.Println("Stopping...")
 				continue
 			}
-			fmt.Printf("Signal received: %v. Stopping job processing...\n", v)
+
+			logger.Printf("Signal received: %v. Stopping job processing...\n", v)
 			proc.Stop()
 			ack = true
+
 		case err := <-done:
 			if err != nil {
-				logger.Fatal("Processing failed:", err)
+				logger.Fatal("Processing failed: ", err)
 			}
-			fmt.Println("Complete.")
+
+			dur := time.Since(start)
+			rate := float64(proc.Processed()) / dur.Seconds()
+
+			logger.Println("Complete.")
+			logger.Println("Processed jobs:", proc.Processed())
+			logger.Printf("Time taken: %v, Avg. rate: %v\n", dur, uint64(rate))
+
 			break loop
 		}
 	}
@@ -145,4 +146,32 @@ func syncFile(f *os.File) {
 	if err := f.Sync(); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to sync file %s: %v", f.Name(), err)
 	}
+}
+
+func exitOn(err error) {
+	if err != nil {
+		fmt.Fprint(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+func exitWithUsage(msg ...interface{}) {
+	fmt.Fprintln(os.Stderr, msg...)
+	flag.PrintDefaults()
+	os.Exit(1)
+}
+
+func parseDivider(s string) div.Divider {
+	var d div.Divider
+	switch s {
+	case "":
+		fallthrough
+	case "syscall":
+		d = calldiv.Divider
+	case "cgo":
+		d = cgodiv.Divider
+	case "go":
+		d = godiv.Divider
+	}
+	return d
 }

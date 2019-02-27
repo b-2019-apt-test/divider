@@ -6,7 +6,7 @@ import (
 	"github.com/b-2019-apt-test/divider/pkg/pool"
 )
 
-const testPoolJobs = 100
+const testPoolJobs = 1000
 
 type TestPoolWorker struct{}
 
@@ -16,7 +16,7 @@ func (w *TestPoolWorker) Process(job interface{}) interface{} {
 
 func TestPool(t *testing.T) {
 
-	p := pool.New(new(TestPoolWorker), 8, 256)
+	p := pool.New(new(TestPoolWorker), 0)
 	results := []struct{}{}
 	jobs := testPoolJobs
 

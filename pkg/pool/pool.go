@@ -2,29 +2,28 @@ package pool
 
 import "sync"
 
-// Worker is a dummy pool worker which processes something and produces
-// some result.
+// Worker is a dummy pool worker which processes some jobs and produces
+// some results.
 type Worker interface {
 	Process(job interface{}) (result interface{})
 }
 
 // Pool represents a poor man worker pool.
-//
-// Results of the work are consumed via non-buffered chan: in fact, Pool is
-// blocked until all results consumed.
-//
-// Pool should be closed when no more jobs left.
 type Pool struct {
-	wg   sync.WaitGroup
 	jobs chan interface{}
+	wg   sync.WaitGroup
 	c    chan interface{}
 }
 
-// New creates a pool with wc count of workers and job buffer of specified size
-func New(w Worker, wc uint, size uint) *Pool {
+// New creates a pool with wc count of workers.
+func New(w Worker, wc uint) *Pool {
+
+	if wc == 0 {
+		wc = 1
+	}
 
 	pool := &Pool{
-		jobs: make(chan interface{}, size),
+		jobs: make(chan interface{}, wc),
 		c:    make(chan interface{})}
 
 	for wc > 0 {
@@ -36,7 +35,7 @@ func New(w Worker, wc uint, size uint) *Pool {
 	return pool
 }
 
-// Close makes the pool to stop the processing of incoming jobs. All buffered
+// Close makes the pool to stop processing of incoming jobs. All buffered
 // jobs will be processed and only then the pool will close consumer chan and
 // finish the work. No jobs must be put into the pool after the close.
 func (p *Pool) Close() {
@@ -45,7 +44,8 @@ func (p *Pool) Close() {
 	close(p.c)
 }
 
-// Put adds the job to the pool.
+// Put adds the job to the pool. The call will be blocked,
+// if all workers are busy.
 func (p *Pool) Put(job interface{}) {
 	p.jobs <- job
 }
